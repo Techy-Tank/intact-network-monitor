@@ -137,6 +137,12 @@ async def get_domains(request: Request):
 
                 await asyncio.sleep(3)
 
+                all_urls = await page.evaluate("() => performance.getEntriesByType('resource').map(e => e.name)")
+                for entry_url in all_urls:
+                    domain = urllib.parse.urlparse(entry_url).netloc
+                    if domain:
+                        captured_domains.add(domain)
+
                 page_text = (await page.content()).lower()
                 is_challenge = any(sig in page_text for sig in BOT_CHALLENGE_SIGNALS)
 
