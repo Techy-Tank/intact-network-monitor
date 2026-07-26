@@ -34,9 +34,8 @@ async def process_url(browser, url_to_scan, captured_domains):
     page.on("request", handle_request)
 
     try:
-        await page.goto(url_to_scan, wait_until="load")
-        await wait_for_images(page, timeout=25)
-        await asyncio.sleep(2)
+        await page.goto(url_to_scan, wait_until="domcontentloaded")
+        await wait_for_images(page, timeout=5)
     except Exception:
         pass
     finally:
