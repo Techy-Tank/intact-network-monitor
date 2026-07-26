@@ -1,4 +1,5 @@
 import asyncio
+import os
 import urllib.parse
 
 from fastapi import FastAPI, Request
@@ -26,6 +27,32 @@ def normalize_url(url):
     return url
 
 
+def parse_proxy(proxy_str):
+    if not proxy_str:
+        return None
+    proxy_str = proxy_str.strip()
+    if "@" in proxy_str:
+        scheme_host = proxy_str.split("@", 1)
+        creds = scheme_host[0]
+        host_port = scheme_host[1]
+        if "://" in creds:
+            proto, user_pass = creds.split("://", 1)
+        else:
+            proto = "http"
+            user_pass = creds
+        if ":" in user_pass:
+            username, password = user_pass.split(":", 1)
+        else:
+            username, password = user_pass, ""
+        return {
+            "server": f"{proto}://{host_port}",
+            "username": username,
+            "password": password,
+        }
+    else:
+        return {"server": proxy_str}
+
+
 @app.on_event("startup")
 async def startup():
     from cloakbrowser import launch_async
@@ -50,6 +77,7 @@ async def shutdown():
 async def get_domains(request: Request):
     urls = []
     target_arg = request.query_params.get("url")
+    proxy_arg = request.query_params.get("proxy") or os.environ.get("DEFAULT_PROXY")
 
     if target_arg:
         urls.append(normalize_url(target_arg))
@@ -64,6 +92,7 @@ async def get_domains(request: Request):
 
     browser = app.state.browser
     results = []
+    proxy_config = parse_proxy(proxy_arg)
 
     async def process_url(url_to_scan):
         captured_domains = set()
@@ -77,7 +106,10 @@ async def get_domains(request: Request):
             redirects.clear()
             status_code = 0
 
-            context = await browser.new_context(viewport={"width": 1366, "height": 768})
+            ctx_kwargs = {"viewport": {"width": 1366, "height": 768}}
+            if proxy_config:
+                ctx_kwargs["proxy"] = proxy_config
+            context = await browser.new_context(**ctx_kwargs)
             page = await context.new_page()
             page.set_default_timeout(60000)
 
