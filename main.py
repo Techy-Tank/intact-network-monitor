@@ -23,6 +23,42 @@ BOT_CHALLENGE_SIGNALS = [
     "cf-browser-verification",
 ]
 
+VIEWPORT_PRESETS = {
+    "mobile":           {"width": 375,  "height": 812,  "label": "Mobile (iPhone)"},
+    "mobile_hd":        {"width": 390,  "height": 844,  "label": "Mobile HD (iPhone 14)"},
+    "mobile_full":      {"width": 430,  "height": 932,  "label": "Mobile Full (iPhone 15 Pro Max)"},
+    "tablet":           {"width": 768,  "height": 1024, "label": "Tablet (iPad)"},
+    "tablet_hd":        {"width": 820,  "height": 1180, "label": "Tablet HD (iPad Air)"},
+    "tablet_landscape": {"width": 1024, "height": 768,  "label": "Tablet Landscape"},
+    "pc":               {"width": 1366, "height": 768,  "label": "PC (Laptop)"},
+    "pc_hd":            {"width": 1920, "height": 1080, "label": "PC HD (1080p)"},
+    "pc_full_hd":       {"width": 2560, "height": 1440, "label": "PC Full HD (1440p)"},
+    "pc_4k":            {"width": 3840, "height": 2160, "label": "PC 4K (2160p)"},
+}
+DEFAULT_VIEWPORT = "pc"
+
+
+def resolve_viewport(preset_or_width=None, height=None):
+    if not preset_or_width:
+        v = VIEWPORT_PRESETS[DEFAULT_VIEWPORT]
+        return {"width": v["width"], "height": v["height"], "preset": DEFAULT_VIEWPORT}
+
+    key = str(preset_or_width).strip().lower()
+    if key in VIEWPORT_PRESETS:
+        v = VIEWPORT_PRESETS[key]
+        return {"width": v["width"], "height": v["height"], "preset": key}
+
+    if "x" in key:
+        parts = key.split("x", 1)
+        w, h = int(parts[0]), int(parts[1])
+    else:
+        w = int(key)
+        h = int(height) if height else int(w * 0.5625)
+
+    w = max(320, min(w, 3840))
+    h = max(320, min(h, 4320))
+    return {"width": w, "height": h, "preset": "custom"}
+
 
 def normalize_url(url):
     url = url.strip()
@@ -128,6 +164,10 @@ async def get_domains(request: Request):
     urls = []
     target_arg = request.query_params.get("url")
     proxy_arg = request.query_params.get("proxy") or os.environ.get("DEFAULT_PROXY")
+    viewport_arg = request.query_params.get("viewport")
+    viewport_w = request.query_params.get("viewport_width")
+    viewport_h = request.query_params.get("viewport_height")
+    vp = resolve_viewport(viewport_arg or viewport_w, viewport_h)
 
     if target_arg:
         urls.append(normalize_url(target_arg))
@@ -156,7 +196,7 @@ async def get_domains(request: Request):
             redirects.clear()
             status_code = 0
 
-            ctx_kwargs = {"viewport": {"width": 1366, "height": 768}}
+            ctx_kwargs = {"viewport": {"width": vp["width"], "height": vp["height"]}}
             if proxy_config:
                 ctx_kwargs["proxy"] = proxy_config
             context = await browser.new_context(**ctx_kwargs)
@@ -243,6 +283,10 @@ async def screenshot_endpoint(request: Request):
     url = request.query_params.get("url")
     proxy_arg = request.query_params.get("proxy") or os.environ.get("DEFAULT_PROXY")
     quality = int(request.query_params.get("quality", "80"))
+    viewport_arg = request.query_params.get("viewport")
+    viewport_w = request.query_params.get("viewport_width")
+    viewport_h = request.query_params.get("viewport_height")
+    vp = resolve_viewport(viewport_arg or viewport_w, viewport_h)
 
     if not url:
         return JSONResponse(content={"error": "Missing url parameter"}, status_code=400)
@@ -251,7 +295,7 @@ async def screenshot_endpoint(request: Request):
     browser = app.state.browser
     proxy_config = parse_proxy(proxy_arg)
 
-    ctx_kwargs = {"viewport": {"width": 1366, "height": 768}}
+    ctx_kwargs = {"viewport": {"width": vp["width"], "height": vp["height"]}}
     if proxy_config:
         ctx_kwargs["proxy"] = proxy_config
     context = await browser.new_context(**ctx_kwargs)
@@ -273,6 +317,7 @@ async def screenshot_endpoint(request: Request):
         "screenshot": screenshot_url,
         "format": "avif",
         "quality": quality,
+        "viewport": {"width": vp["width"], "height": vp["height"], "preset": vp["preset"]},
     })
 
 
@@ -281,6 +326,10 @@ async def scan_endpoint(request: Request):
     url = request.query_params.get("url")
     proxy_arg = request.query_params.get("proxy") or os.environ.get("DEFAULT_PROXY")
     quality = int(request.query_params.get("quality", "80"))
+    viewport_arg = request.query_params.get("viewport")
+    viewport_w = request.query_params.get("viewport_width")
+    viewport_h = request.query_params.get("viewport_height")
+    vp = resolve_viewport(viewport_arg or viewport_w, viewport_h)
 
     if not url:
         return JSONResponse(content={"error": "Missing url parameter"}, status_code=400)
@@ -294,7 +343,7 @@ async def scan_endpoint(request: Request):
     errors = []
     status_code = 0
 
-    ctx_kwargs = {"viewport": {"width": 1366, "height": 768}}
+    ctx_kwargs = {"viewport": {"width": vp["width"], "height": vp["height"]}}
     if proxy_config:
         ctx_kwargs["proxy"] = proxy_config
     context = await browser.new_context(**ctx_kwargs)
@@ -357,4 +406,5 @@ async def scan_endpoint(request: Request):
         "status_code": status_code,
         "errors": errors,
         "screenshot": screenshot_url,
+        "viewport": {"width": vp["width"], "height": vp["height"], "preset": vp["preset"]},
     })
