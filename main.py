@@ -19,6 +19,7 @@ async def startup():
     from cloakbrowser import launch_async
     app.state.browser = await launch_async(
         headless=True,
+        humanize=True,
         args=[
             "--disable-blink-features=AutomationControlled",
             "--no-sandbox",
@@ -76,13 +77,16 @@ async def get_domains(request: Request):
         page.on("request", handle_request)
         page.on("response", handle_response)
 
+        status_code = 0
         try:
             response = await page.goto(url_to_scan, wait_until="networkidle")
+            status_code = response.status if response else 0
             if not response:
                 errors.append("No response received")
             elif response.status >= 400:
                 errors.append(f"HTTP {response.status}")
         except Exception as e:
+            status_code = 0
             errors.append(f"{type(e).__name__}: {e}")
         finally:
             await context.close()
@@ -92,6 +96,7 @@ async def get_domains(request: Request):
             "domains": sorted(captured_domains),
             "redirects": redirects,
             "errors": errors,
+            "status_code": status_code,
         })
 
     await asyncio.gather(*(process_url(u) for u in urls))
@@ -106,8 +111,8 @@ async def get_domains(request: Request):
         header = f"--- {url}"
         if redirects:
             for orig, dest, code in redirects:
-                header += f" → {dest} ({code} redirect)"
-        header += " ---"
+                header += f" → {dest} ({code})"
+        header += f" | HTTP {r['status_code']} ---"
         output_lines.append(header)
 
         if errors:
