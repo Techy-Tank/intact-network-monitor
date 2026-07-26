@@ -1,10 +1,12 @@
 import asyncio
 import os
+import time
 import urllib.parse
 from io import BytesIO
 
+import cloudinary.uploader
 from fastapi import FastAPI, Request
-from fastapi.responses import PlainTextResponse, Response
+from fastapi.responses import JSONResponse, PlainTextResponse, Response
 from PIL import Image
 
 app = FastAPI(title="Intact Network Monitor API")
@@ -60,6 +62,19 @@ def convert_to_avif(png_bytes, quality=80):
     buf = BytesIO()
     img.save(buf, format="AVIF", quality=quality, speed=0)
     return buf.getvalue()
+
+
+def upload_to_cloudinary(avif_bytes, url):
+    safe_name = url.replace("https://", "").replace("http://", "").replace("/", "_").replace(".", "_")[:80]
+    timestamp = int(time.time())
+    public_id = f"intact-monitor/{safe_name}_{timestamp}"
+    result = cloudinary.uploader.upload(
+        avif_bytes,
+        public_id=public_id,
+        resource_type="image",
+        format="avif",
+    )
+    return result["secure_url"]
 
 
 def build_text_output(results):
@@ -230,7 +245,7 @@ async def screenshot_endpoint(request: Request):
     quality = int(request.query_params.get("quality", "80"))
 
     if not url:
-        return PlainTextResponse(content="Error: Missing url parameter.\n", status_code=400)
+        return JSONResponse(content={"error": "Missing url parameter"}, status_code=400)
 
     url = normalize_url(url)
     browser = app.state.browser
@@ -251,12 +266,14 @@ async def screenshot_endpoint(request: Request):
         await context.close()
 
     avif_bytes = convert_to_avif(png_bytes, quality)
+    screenshot_url = upload_to_cloudinary(avif_bytes, url)
 
-    return Response(
-        content=avif_bytes,
-        status_code=200,
-        media_type="image/avif",
-    )
+    return JSONResponse(content={
+        "url": url,
+        "screenshot": screenshot_url,
+        "format": "avif",
+        "quality": quality,
+    })
 
 
 @app.get("/scan")
@@ -266,7 +283,7 @@ async def scan_endpoint(request: Request):
     quality = int(request.query_params.get("quality", "80"))
 
     if not url:
-        return PlainTextResponse(content="Error: Missing url parameter.\n", status_code=400)
+        return JSONResponse(content={"error": "Missing url parameter"}, status_code=400)
 
     url = normalize_url(url)
     browser = app.state.browser
@@ -328,34 +345,16 @@ async def scan_endpoint(request: Request):
     finally:
         await context.close()
 
-    result = {
-        "url": url,
-        "domains": sorted(captured_domains),
-        "redirects": redirects,
-        "errors": errors,
-        "status_code": status_code,
-    }
-    text_content = build_text_output([result])
-
+    screenshot_url = ""
     if png_bytes:
         avif_bytes = convert_to_avif(png_bytes, quality)
-    else:
-        avif_bytes = b""
+        screenshot_url = upload_to_cloudinary(avif_bytes, url)
 
-    boundary = "----IntactNetworkBoundary"
-    body = b""
-    body += f"--{boundary}\r\n".encode()
-    body += b"Content-Type: text/plain; charset=utf-8\r\n\r\n"
-    body += text_content.encode("utf-8")
-    body += b"\r\n"
-    body += f"--{boundary}\r\n".encode()
-    body += b"Content-Type: image/avif\r\n\r\n"
-    body += avif_bytes
-    body += b"\r\n"
-    body += f"--{boundary}--\r\n".encode()
-
-    return Response(
-        content=body,
-        status_code=200,
-        media_type=f"multipart/mixed; boundary={boundary}",
-    )
+    return JSONResponse(content={
+        "url": url,
+        "domains": sorted(captured_domains),
+        "redirects": [{"from": r[0], "to": r[1], "code": r[2]} for r in redirects],
+        "status_code": status_code,
+        "errors": errors,
+        "screenshot": screenshot_url,
+    })
