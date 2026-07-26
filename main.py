@@ -135,6 +135,8 @@ async def get_domains(request: Request):
                     errors.append(f"HTTP {response.status}")
                     break
 
+                await asyncio.sleep(3)
+
                 page_text = (await page.content()).lower()
                 is_challenge = any(sig in page_text for sig in BOT_CHALLENGE_SIGNALS)
 
