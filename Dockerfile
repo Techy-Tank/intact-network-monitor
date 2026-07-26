@@ -1,6 +1,6 @@
 FROM python:3.11-slim
 
-# Install system dependencies for Chromium
+# Install system dependencies for Chromium + Xvfb
 RUN apt-get update && apt-get install -y \
     libnss3 \
     libnspr4 \
@@ -24,6 +24,7 @@ RUN apt-get update && apt-get install -y \
     fonts-noto-color-emoji \
     fontconfig \
     curl \
+    xvfb \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
