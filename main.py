@@ -1,9 +1,11 @@
 import asyncio
 import os
 import urllib.parse
+from io import BytesIO
 
 from fastapi import FastAPI, Request
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import PlainTextResponse, Response
+from PIL import Image
 
 app = FastAPI(title="Intact Network Monitor API")
 
@@ -51,6 +53,39 @@ def parse_proxy(proxy_str):
         }
     else:
         return {"server": proxy_str}
+
+
+def convert_to_avif(png_bytes, quality=80):
+    img = Image.open(BytesIO(png_bytes))
+    buf = BytesIO()
+    img.save(buf, format="AVIF", quality=quality, speed=0)
+    return buf.getvalue()
+
+
+def build_text_output(results):
+    output_lines = []
+    for r in results:
+        url = r["url"]
+        domains = r["domains"]
+        redirects = r["redirects"]
+        errors = r["errors"]
+
+        header = f"--- {url}"
+        if redirects:
+            for orig, dest, code in redirects:
+                header += f" → {dest} ({code})"
+        header += f" | HTTP {r['status_code']} ---"
+        output_lines.append(header)
+
+        if errors:
+            for e in errors:
+                output_lines.append(f"ERROR: {e}")
+        else:
+            output_lines.append("\n".join(domains))
+
+        output_lines.append("")
+
+    return "\n".join(output_lines)
 
 
 @app.on_event("startup")
@@ -176,30 +211,8 @@ async def get_domains(request: Request):
 
     await asyncio.gather(*(process_url(u) for u in urls))
 
-    output_lines = []
-    for r in results:
-        url = r["url"]
-        domains = r["domains"]
-        redirects = r["redirects"]
-        errors = r["errors"]
-
-        header = f"--- {url}"
-        if redirects:
-            for orig, dest, code in redirects:
-                header += f" → {dest} ({code})"
-        header += f" | HTTP {r['status_code']} ---"
-        output_lines.append(header)
-
-        if errors:
-            for e in errors:
-                output_lines.append(f"ERROR: {e}")
-        else:
-            output_lines.append("\n".join(domains))
-
-        output_lines.append("")
-
     return PlainTextResponse(
-        content="\n".join(output_lines),
+        content=build_text_output(results),
         status_code=200,
         media_type="text/plain; charset=utf-8",
     )
@@ -208,3 +221,141 @@ async def get_domains(request: Request):
 @app.post("/", response_class=PlainTextResponse)
 async def post_domains(request: Request):
     return await get_domains(request)
+
+
+@app.get("/screenshot")
+async def screenshot_endpoint(request: Request):
+    url = request.query_params.get("url")
+    proxy_arg = request.query_params.get("proxy") or os.environ.get("DEFAULT_PROXY")
+    quality = int(request.query_params.get("quality", "80"))
+
+    if not url:
+        return PlainTextResponse(content="Error: Missing url parameter.\n", status_code=400)
+
+    url = normalize_url(url)
+    browser = app.state.browser
+    proxy_config = parse_proxy(proxy_arg)
+
+    ctx_kwargs = {"viewport": {"width": 1366, "height": 768}}
+    if proxy_config:
+        ctx_kwargs["proxy"] = proxy_config
+    context = await browser.new_context(**ctx_kwargs)
+    page = await context.new_page()
+    page.set_default_timeout(60000)
+
+    try:
+        await page.goto(url, wait_until="networkidle")
+        await asyncio.sleep(2)
+        png_bytes = await page.screenshot(type="png", full_page=False)
+    finally:
+        await context.close()
+
+    avif_bytes = convert_to_avif(png_bytes, quality)
+
+    return Response(
+        content=avif_bytes,
+        status_code=200,
+        media_type="image/avif",
+    )
+
+
+@app.get("/scan")
+async def scan_endpoint(request: Request):
+    url = request.query_params.get("url")
+    proxy_arg = request.query_params.get("proxy") or os.environ.get("DEFAULT_PROXY")
+    quality = int(request.query_params.get("quality", "80"))
+
+    if not url:
+        return PlainTextResponse(content="Error: Missing url parameter.\n", status_code=400)
+
+    url = normalize_url(url)
+    browser = app.state.browser
+    proxy_config = parse_proxy(proxy_arg)
+
+    captured_domains = set()
+    redirects = []
+    errors = []
+    status_code = 0
+
+    ctx_kwargs = {"viewport": {"width": 1366, "height": 768}}
+    if proxy_config:
+        ctx_kwargs["proxy"] = proxy_config
+    context = await browser.new_context(**ctx_kwargs)
+    page = await context.new_page()
+    page.set_default_timeout(60000)
+
+    def handle_request(req):
+        domain = urllib.parse.urlparse(req.url).netloc
+        if domain:
+            captured_domains.add(domain)
+
+    def handle_response(resp):
+        if resp.request.is_navigation_request():
+            st = resp.status
+            if st in (301, 302, 303, 307, 308):
+                location = resp.headers.get("location", "unknown")
+                redirects.append((resp.url, location, st))
+
+    page.on("request", handle_request)
+    page.on("response", handle_response)
+
+    try:
+        response = await page.goto(url, wait_until="networkidle")
+        status_code = response.status if response else 0
+
+        if response and response.status < 400:
+            await asyncio.sleep(2)
+
+            all_urls = await page.evaluate(
+                "() => performance.getEntriesByType('resource').map(e => e.name)"
+            )
+            for entry_url in all_urls:
+                domain = urllib.parse.urlparse(entry_url).netloc
+                if domain:
+                    captured_domains.add(domain)
+
+            png_bytes = await page.screenshot(type="png", full_page=False)
+        else:
+            png_bytes = await page.screenshot(type="png", full_page=False)
+            if response:
+                errors.append(f"HTTP {response.status}")
+            else:
+                errors.append("No response received")
+    except Exception as e:
+        status_code = 0
+        errors.append(f"{type(e).__name__}: {e}")
+        png_bytes = b""
+    finally:
+        await context.close()
+
+    result = {
+        "url": url,
+        "domains": sorted(captured_domains),
+        "redirects": redirects,
+        "errors": errors,
+        "status_code": status_code,
+    }
+    text_content = build_text_output([result])
+
+    if png_bytes:
+        avif_bytes = convert_to_avif(png_bytes, quality)
+    else:
+        avif_bytes = b""
+
+    boundary = "----IntactNetworkBoundary"
+    body = b""
+    body += f"--{boundary}\r\n".encode()
+    body += b"Content-Type: text/plain; charset=utf-8\r\n\r\n"
+    body += text_content.encode("utf-8")
+    body += b"\r\n"
+    body += f"--{boundary}\r\n".encode()
+    body += b"Content-Type: image/avif\r\n\r\n"
+    body += avif_bytes
+    body += b"\r\n"
+    body += f"--{boundary}--\r\n".encode()
+
+    return Response(
+        content=body,
+        status_code=200,
+        media_type=f"multipart/mixed; boundary={boundary}",
+    )
