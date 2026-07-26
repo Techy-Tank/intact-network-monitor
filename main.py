@@ -100,6 +100,18 @@ def convert_to_avif(png_bytes, quality=80):
     return buf.getvalue()
 
 
+async def wait_for_images(page, timeout=15):
+    try:
+        await page.wait_for_function("""
+            () => {
+                const imgs = Array.from(document.querySelectorAll('img'));
+                return imgs.length === 0 || imgs.every(img => img.complete && img.naturalWidth > 0);
+            }
+        """, timeout=timeout * 1000)
+    except:
+        pass
+
+
 def upload_to_cloudinary(avif_bytes, url):
     safe_name = url.replace("https://", "").replace("http://", "").replace("/", "_").replace(".", "_")[:80]
     timestamp = int(time.time())
@@ -331,6 +343,7 @@ async def screenshot_endpoint(request: Request):
             await asyncio.sleep(delay)
         else:
             await asyncio.sleep(1)
+        await wait_for_images(page)
         t2 = time.time()
         png_bytes = await page.screenshot(type="png", full_page=full_page)
         t3 = time.time()
@@ -419,6 +432,7 @@ async def scan_endpoint(request: Request):
                 await asyncio.sleep(delay)
             else:
                 await asyncio.sleep(1)
+            await wait_for_images(page)
             t2 = time.time()
 
             all_urls = await page.evaluate(
