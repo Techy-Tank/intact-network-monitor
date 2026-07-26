@@ -1,16 +1,10 @@
 import asyncio
-import os
-import subprocess
-import time
 import urllib.parse
 
 from fastapi import FastAPI, Request
 from fastapi.responses import PlainTextResponse
 
 app = FastAPI(title="Intact Network Monitor API")
-
-XVFB_W, XVFB_H = 1920, 1080
-VIEW_W, VIEW_H = 1366, 768
 
 BOT_CHALLENGE_SIGNALS = [
     "please wait for verification",
@@ -35,30 +29,14 @@ def normalize_url(url):
 @app.on_event("startup")
 async def startup():
     from cloakbrowser import launch_async
-
-    app.state.xvfb = None
-    try:
-        xvfb = subprocess.Popen(
-            ["Xvfb", ":99", "-screen", "0", f"{XVFB_W}x{XVFB_H}x24", "-nolisten", "tcp"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        os.environ["DISPLAY"] = ":99"
-        time.sleep(2)
-        app.state.xvfb = xvfb
-        use_headless = False
-    except FileNotFoundError:
-        use_headless = True
-
     app.state.browser = await launch_async(
-        headless=use_headless,
+        headless=True,
         humanize=True,
         args=[
             "--disable-blink-features=AutomationControlled",
             "--no-sandbox",
             "--disable-dev-shm-usage",
             "--disable-gpu",
-            f"--window-size={VIEW_W},{VIEW_H}",
         ],
     )
 
@@ -66,11 +44,6 @@ async def startup():
 @app.on_event("shutdown")
 async def shutdown():
     await app.state.browser.close()
-    if app.state.xvfb:
-        try:
-            app.state.xvfb.terminate()
-        except Exception:
-            pass
 
 
 @app.get("/", response_class=PlainTextResponse)
@@ -104,7 +77,7 @@ async def get_domains(request: Request):
             redirects.clear()
             status_code = 0
 
-            context = await browser.new_context(viewport={"width": VIEW_W, "height": VIEW_H})
+            context = await browser.new_context(viewport={"width": 1366, "height": 768})
             page = await context.new_page()
             page.set_default_timeout(60000)
 
@@ -135,9 +108,11 @@ async def get_domains(request: Request):
                     errors.append(f"HTTP {response.status}")
                     break
 
-                await asyncio.sleep(3)
+                await asyncio.sleep(2)
 
-                all_urls = await page.evaluate("() => performance.getEntriesByType('resource').map(e => e.name)")
+                all_urls = await page.evaluate(
+                    "() => performance.getEntriesByType('resource').map(e => e.name)"
+                )
                 for entry_url in all_urls:
                     domain = urllib.parse.urlparse(entry_url).netloc
                     if domain:
@@ -145,11 +120,6 @@ async def get_domains(request: Request):
 
                 page_text = (await page.content()).lower()
                 is_challenge = any(sig in page_text for sig in BOT_CHALLENGE_SIGNALS)
-
-                if is_challenge:
-                    print(f"[RETRY] {url_to_scan} attempt {attempt+1}: bot challenge detected", flush=True)
-                else:
-                    print(f"[OK] {url_to_scan} attempt {attempt+1}: {len(captured_domains)} domains", flush=True)
 
                 if not is_challenge:
                     break
@@ -170,7 +140,6 @@ async def get_domains(request: Request):
             "redirects": redirects,
             "errors": errors,
             "status_code": status_code,
-            "retries": attempt + 1,
         })
 
     await asyncio.gather(*(process_url(u) for u in urls))
@@ -207,28 +176,3 @@ async def get_domains(request: Request):
 @app.post("/", response_class=PlainTextResponse)
 async def post_domains(request: Request):
     return await get_domains(request)
-
-
-@app.get("/debug", response_class=PlainTextResponse)
-async def debug_page(url: str):
-    from cloakbrowser import launch_async
-
-    browser = app.state.browser
-    context = await browser.new_context(viewport={"width": VIEW_W, "height": VIEW_H})
-    page = await context.new_page()
-    page.set_default_timeout(60000)
-
-    try:
-        response = await page.goto(url, wait_until="networkidle")
-        status = response.status if response else 0
-        title = await page.title()
-        content = await page.content()
-        text = content[:3000]
-        return PlainTextResponse(
-            content=f"URL: {url}\nStatus: {status}\nTitle: {title}\n\n--- PAGE TEXT (first 3000 chars) ---\n{text}",
-            status_code=200,
-        )
-    except Exception as e:
-        return PlainTextResponse(content=f"Error: {e}", status_code=500)
-    finally:
-        await context.close()
