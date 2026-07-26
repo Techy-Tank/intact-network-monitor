@@ -286,6 +286,7 @@ async def screenshot_endpoint(request: Request):
     viewport_arg = request.query_params.get("viewport")
     viewport_w = request.query_params.get("viewport_width")
     viewport_h = request.query_params.get("viewport_height")
+    full_page = request.query_params.get("full_page", "false").lower() == "true"
     vp = resolve_viewport(viewport_arg or viewport_w, viewport_h)
 
     if not url:
@@ -305,7 +306,7 @@ async def screenshot_endpoint(request: Request):
     try:
         await page.goto(url, wait_until="networkidle")
         await asyncio.sleep(2)
-        png_bytes = await page.screenshot(type="png", full_page=False)
+        png_bytes = await page.screenshot(type="png", full_page=full_page)
     finally:
         await context.close()
 
@@ -318,6 +319,7 @@ async def screenshot_endpoint(request: Request):
         "format": "avif",
         "quality": quality,
         "viewport": {"width": vp["width"], "height": vp["height"], "preset": vp["preset"]},
+        "full_page": full_page,
     })
 
 
@@ -329,6 +331,7 @@ async def scan_endpoint(request: Request):
     viewport_arg = request.query_params.get("viewport")
     viewport_w = request.query_params.get("viewport_width")
     viewport_h = request.query_params.get("viewport_height")
+    full_page = request.query_params.get("full_page", "false").lower() == "true"
     vp = resolve_viewport(viewport_arg or viewport_w, viewport_h)
 
     if not url:
@@ -380,9 +383,9 @@ async def scan_endpoint(request: Request):
                 if domain:
                     captured_domains.add(domain)
 
-            png_bytes = await page.screenshot(type="png", full_page=False)
+            png_bytes = await page.screenshot(type="png", full_page=full_page)
         else:
-            png_bytes = await page.screenshot(type="png", full_page=False)
+            png_bytes = await page.screenshot(type="png", full_page=full_page)
             if response:
                 errors.append(f"HTTP {response.status}")
             else:
@@ -407,4 +410,5 @@ async def scan_endpoint(request: Request):
         "errors": errors,
         "screenshot": screenshot_url,
         "viewport": {"width": vp["width"], "height": vp["height"], "preset": vp["preset"]},
+        "full_page": full_page,
     })
