@@ -138,6 +138,11 @@ async def get_domains(request: Request):
                 page_text = (await page.content()).lower()
                 is_challenge = any(sig in page_text for sig in BOT_CHALLENGE_SIGNALS)
 
+                if is_challenge:
+                    print(f"[RETRY] {url_to_scan} attempt {attempt+1}: bot challenge detected", flush=True)
+                else:
+                    print(f"[OK] {url_to_scan} attempt {attempt+1}: {len(captured_domains)} domains", flush=True)
+
                 if not is_challenge:
                     break
 
@@ -194,3 +199,28 @@ async def get_domains(request: Request):
 @app.post("/", response_class=PlainTextResponse)
 async def post_domains(request: Request):
     return await get_domains(request)
+
+
+@app.get("/debug", response_class=PlainTextResponse)
+async def debug_page(url: str):
+    from cloakbrowser import launch_async
+
+    browser = app.state.browser
+    context = await browser.new_context(viewport={"width": VIEW_W, "height": VIEW_H})
+    page = await context.new_page()
+    page.set_default_timeout(60000)
+
+    try:
+        response = await page.goto(url, wait_until="networkidle")
+        status = response.status if response else 0
+        title = await page.title()
+        content = await page.content()
+        text = content[:3000]
+        return PlainTextResponse(
+            content=f"URL: {url}\nStatus: {status}\nTitle: {title}\n\n--- PAGE TEXT (first 3000 chars) ---\n{text}",
+            status_code=200,
+        )
+    except Exception as e:
+        return PlainTextResponse(content=f"Error: {e}", status_code=500)
+    finally:
+        await context.close()
