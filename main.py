@@ -171,6 +171,7 @@ async def get_domains(request: Request):
     wait_strategy = request.query_params.get("wait", "networkidle")
     if wait_strategy not in ("networkidle", "domcontentloaded", "load"):
         wait_strategy = "networkidle"
+    delay = float(request.query_params.get("delay", "0"))
 
     if target_arg:
         urls.append(normalize_url(target_arg))
@@ -235,7 +236,12 @@ async def get_domains(request: Request):
                     errors.append(f"HTTP {response.status}")
                     break
 
-                await asyncio.sleep(1)
+                if wait_strategy != "networkidle":
+                    await page.evaluate("() => document.fonts.ready")
+                if delay > 0:
+                    await asyncio.sleep(delay)
+                else:
+                    await asyncio.sleep(1)
                 t2 = time.time()
 
                 all_urls = await page.evaluate(
@@ -298,6 +304,7 @@ async def screenshot_endpoint(request: Request):
     wait_strategy = request.query_params.get("wait", "networkidle")
     if wait_strategy not in ("networkidle", "domcontentloaded", "load"):
         wait_strategy = "networkidle"
+    delay = float(request.query_params.get("delay", "0"))
     vp = resolve_viewport(viewport_arg or viewport_w, viewport_h)
 
     if not url:
@@ -318,7 +325,12 @@ async def screenshot_endpoint(request: Request):
         t0 = time.time()
         await page.goto(url, wait_until=wait_strategy)
         t1 = time.time()
-        await asyncio.sleep(1)
+        if wait_strategy != "networkidle":
+            await page.evaluate("() => document.fonts.ready")
+        if delay > 0:
+            await asyncio.sleep(delay)
+        else:
+            await asyncio.sleep(1)
         t2 = time.time()
         png_bytes = await page.screenshot(type="png", full_page=full_page)
         t3 = time.time()
@@ -330,7 +342,7 @@ async def screenshot_endpoint(request: Request):
     screenshot_url = upload_to_cloudinary(avif_bytes, url)
     t5 = time.time()
 
-    print(f"TIMING screenshot goto={t1-t0:.1f}s sleep={t2-t1:.1f}s capture={t3-t2:.1f}s avif={t4-t3:.1f}s upload={t5-t4:.1f}s total={t5-t0:.1f}s url={url}")
+    print(f"TIMING screenshot goto={t1-t0:.1f}s settle={t2-t1:.1f}s capture={t3-t2:.1f}s avif={t4-t3:.1f}s upload={t5-t4:.1f}s total={t5-t0:.1f}s url={url}")
 
     return JSONResponse(content={
         "url": url,
@@ -339,7 +351,9 @@ async def screenshot_endpoint(request: Request):
         "quality": quality,
         "viewport": {"width": vp["width"], "height": vp["height"], "preset": vp["preset"]},
         "full_page": full_page,
-        "timing": {"goto": round(t1-t0, 1), "sleep": round(t2-t1, 1), "capture": round(t3-t2, 1), "avif": round(t4-t3, 1), "upload": round(t5-t4, 1), "total": round(t5-t0, 1)},
+        "wait": wait_strategy,
+        "delay": delay,
+        "timing": {"goto": round(t1-t0, 1), "settle": round(t2-t1, 1), "capture": round(t3-t2, 1), "avif": round(t4-t3, 1), "upload": round(t5-t4, 1), "total": round(t5-t0, 1)},
     })
 
 
@@ -355,6 +369,7 @@ async def scan_endpoint(request: Request):
     wait_strategy = request.query_params.get("wait", "networkidle")
     if wait_strategy not in ("networkidle", "domcontentloaded", "load"):
         wait_strategy = "networkidle"
+    delay = float(request.query_params.get("delay", "0"))
     vp = resolve_viewport(viewport_arg or viewport_w, viewport_h)
 
     if not url:
@@ -398,7 +413,12 @@ async def scan_endpoint(request: Request):
         status_code = response.status if response else 0
 
         if response and response.status < 400:
-            await asyncio.sleep(1)
+            if wait_strategy != "networkidle":
+                await page.evaluate("() => document.fonts.ready")
+            if delay > 0:
+                await asyncio.sleep(delay)
+            else:
+                await asyncio.sleep(1)
             t2 = time.time()
 
             all_urls = await page.evaluate(
@@ -436,7 +456,7 @@ async def scan_endpoint(request: Request):
         screenshot_url = upload_to_cloudinary(avif_bytes, url)
         t5 = time.time()
 
-    print(f"TIMING scan goto={t1-t0:.1f}s sleep={t2-t1:.1f}s capture={t3-t2:.1f}s avif={t4-t3:.1f}s upload={t5-t4:.1f}s total={t5-t0:.1f}s url={url}")
+    print(f"TIMING scan goto={t1-t0:.1f}s settle={t2-t1:.1f}s capture={t3-t2:.1f}s avif={t4-t3:.1f}s upload={t5-t4:.1f}s total={t5-t0:.1f}s url={url}")
 
     return JSONResponse(content={
         "url": url,
@@ -447,5 +467,7 @@ async def scan_endpoint(request: Request):
         "screenshot": screenshot_url,
         "viewport": {"width": vp["width"], "height": vp["height"], "preset": vp["preset"]},
         "full_page": full_page,
-        "timing": {"goto": round(t1-t0, 1), "sleep": round(t2-t1, 1), "capture": round(t3-t2, 1), "avif": round(t4-t3, 1), "upload": round(t5-t4, 1), "total": round(t5-t0, 1)},
+        "wait": wait_strategy,
+        "delay": delay,
+        "timing": {"goto": round(t1-t0, 1), "settle": round(t2-t1, 1), "capture": round(t3-t2, 1), "avif": round(t4-t3, 1), "upload": round(t5-t4, 1), "total": round(t5-t0, 1)},
     })
