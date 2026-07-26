@@ -96,7 +96,7 @@ def parse_proxy(proxy_str):
 def convert_to_avif(png_bytes, quality=80):
     img = Image.open(BytesIO(png_bytes))
     buf = BytesIO()
-    img.save(buf, format="AVIF", quality=quality, speed=0)
+    img.save(buf, format="AVIF", quality=quality, speed=6)
     return buf.getvalue()
 
 
@@ -168,6 +168,9 @@ async def get_domains(request: Request):
     viewport_w = request.query_params.get("viewport_width")
     viewport_h = request.query_params.get("viewport_height")
     vp = resolve_viewport(viewport_arg or viewport_w, viewport_h)
+    wait_strategy = request.query_params.get("wait", "networkidle")
+    if wait_strategy not in ("networkidle", "domcontentloaded", "load"):
+        wait_strategy = "networkidle"
 
     if target_arg:
         urls.append(normalize_url(target_arg))
@@ -219,7 +222,9 @@ async def get_domains(request: Request):
             page.on("response", handle_response)
 
             try:
-                response = await page.goto(url_to_scan, wait_until="networkidle")
+                t0 = time.time()
+                response = await page.goto(url_to_scan, wait_until=wait_strategy)
+                t1 = time.time()
                 status_code = response.status if response else 0
 
                 if not response:
@@ -230,7 +235,8 @@ async def get_domains(request: Request):
                     errors.append(f"HTTP {response.status}")
                     break
 
-                await asyncio.sleep(2)
+                await asyncio.sleep(1)
+                t2 = time.time()
 
                 all_urls = await page.evaluate(
                     "() => performance.getEntriesByType('resource').map(e => e.name)"
@@ -242,6 +248,8 @@ async def get_domains(request: Request):
 
                 page_text = (await page.content()).lower()
                 is_challenge = any(sig in page_text for sig in BOT_CHALLENGE_SIGNALS)
+
+                print(f"TIMING scan goto={t1-t0:.1f}s wait={t2-t1:.1f}s url={url_to_scan}")
 
                 if not is_challenge:
                     break
@@ -287,6 +295,9 @@ async def screenshot_endpoint(request: Request):
     viewport_w = request.query_params.get("viewport_width")
     viewport_h = request.query_params.get("viewport_height")
     full_page = request.query_params.get("full_page", "false").lower() == "true"
+    wait_strategy = request.query_params.get("wait", "networkidle")
+    if wait_strategy not in ("networkidle", "domcontentloaded", "load"):
+        wait_strategy = "networkidle"
     vp = resolve_viewport(viewport_arg or viewport_w, viewport_h)
 
     if not url:
@@ -304,14 +315,22 @@ async def screenshot_endpoint(request: Request):
     page.set_default_timeout(60000)
 
     try:
-        await page.goto(url, wait_until="networkidle")
-        await asyncio.sleep(2)
+        t0 = time.time()
+        await page.goto(url, wait_until=wait_strategy)
+        t1 = time.time()
+        await asyncio.sleep(1)
+        t2 = time.time()
         png_bytes = await page.screenshot(type="png", full_page=full_page)
+        t3 = time.time()
     finally:
         await context.close()
 
     avif_bytes = convert_to_avif(png_bytes, quality)
+    t4 = time.time()
     screenshot_url = upload_to_cloudinary(avif_bytes, url)
+    t5 = time.time()
+
+    print(f"TIMING screenshot goto={t1-t0:.1f}s sleep={t2-t1:.1f}s capture={t3-t2:.1f}s avif={t4-t3:.1f}s upload={t5-t4:.1f}s total={t5-t0:.1f}s url={url}")
 
     return JSONResponse(content={
         "url": url,
@@ -320,6 +339,7 @@ async def screenshot_endpoint(request: Request):
         "quality": quality,
         "viewport": {"width": vp["width"], "height": vp["height"], "preset": vp["preset"]},
         "full_page": full_page,
+        "timing": {"goto": round(t1-t0, 1), "sleep": round(t2-t1, 1), "capture": round(t3-t2, 1), "avif": round(t4-t3, 1), "upload": round(t5-t4, 1), "total": round(t5-t0, 1)},
     })
 
 
@@ -332,6 +352,9 @@ async def scan_endpoint(request: Request):
     viewport_w = request.query_params.get("viewport_width")
     viewport_h = request.query_params.get("viewport_height")
     full_page = request.query_params.get("full_page", "false").lower() == "true"
+    wait_strategy = request.query_params.get("wait", "networkidle")
+    if wait_strategy not in ("networkidle", "domcontentloaded", "load"):
+        wait_strategy = "networkidle"
     vp = resolve_viewport(viewport_arg or viewport_w, viewport_h)
 
     if not url:
@@ -369,11 +392,14 @@ async def scan_endpoint(request: Request):
     page.on("response", handle_response)
 
     try:
-        response = await page.goto(url, wait_until="networkidle")
+        t0 = time.time()
+        response = await page.goto(url, wait_until=wait_strategy)
+        t1 = time.time()
         status_code = response.status if response else 0
 
         if response and response.status < 400:
-            await asyncio.sleep(2)
+            await asyncio.sleep(1)
+            t2 = time.time()
 
             all_urls = await page.evaluate(
                 "() => performance.getEntriesByType('resource').map(e => e.name)"
@@ -384,8 +410,11 @@ async def scan_endpoint(request: Request):
                     captured_domains.add(domain)
 
             png_bytes = await page.screenshot(type="png", full_page=full_page)
+            t3 = time.time()
         else:
+            t2 = t1
             png_bytes = await page.screenshot(type="png", full_page=full_page)
+            t3 = time.time()
             if response:
                 errors.append(f"HTTP {response.status}")
             else:
@@ -394,13 +423,20 @@ async def scan_endpoint(request: Request):
         status_code = 0
         errors.append(f"{type(e).__name__}: {e}")
         png_bytes = b""
+        t0 = t1 = t2 = t3 = time.time()
     finally:
         await context.close()
 
     screenshot_url = ""
+    t4 = time.time()
+    t5 = time.time()
     if png_bytes:
         avif_bytes = convert_to_avif(png_bytes, quality)
+        t4 = time.time()
         screenshot_url = upload_to_cloudinary(avif_bytes, url)
+        t5 = time.time()
+
+    print(f"TIMING scan goto={t1-t0:.1f}s sleep={t2-t1:.1f}s capture={t3-t2:.1f}s avif={t4-t3:.1f}s upload={t5-t4:.1f}s total={t5-t0:.1f}s url={url}")
 
     return JSONResponse(content={
         "url": url,
@@ -411,4 +447,5 @@ async def scan_endpoint(request: Request):
         "screenshot": screenshot_url,
         "viewport": {"width": vp["width"], "height": vp["height"], "preset": vp["preset"]},
         "full_page": full_page,
+        "timing": {"goto": round(t1-t0, 1), "sleep": round(t2-t1, 1), "capture": round(t3-t2, 1), "avif": round(t4-t3, 1), "upload": round(t5-t4, 1), "total": round(t5-t0, 1)},
     })
