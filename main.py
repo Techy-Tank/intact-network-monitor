@@ -7,17 +7,11 @@ from fastapi.responses import PlainTextResponse
 app = FastAPI(title="Intact Network Monitor API")
 
 
-async def wait_for_images(page, timeout=5):
-    try:
-        await page.wait_for_function("""
-            () => {
-                const imgs = Array.from(document.querySelectorAll('img'));
-                return imgs.length > 0 && imgs.every(img => img.complete && img.naturalWidth > 0);
-            }
-        """, timeout=timeout * 1000)
-        return True
-    except Exception:
-        return False
+def normalize_url(url):
+    url = url.strip()
+    if not url.startswith(("http://", "https://")):
+        url = "https://" + url
+    return url
 
 
 @app.on_event("startup")
@@ -45,43 +39,90 @@ async def get_domains(request: Request):
     target_arg = request.query_params.get("url")
 
     if target_arg:
-        urls.append(target_arg)
+        urls.append(normalize_url(target_arg))
     else:
         body_text = await request.body()
         body_text = body_text.decode("utf-8")
         if body_text:
-            urls = [line.strip() for line in body_text.splitlines() if line.strip()]
+            urls = [normalize_url(line) for line in body_text.splitlines() if line.strip()]
 
     if not urls:
         return PlainTextResponse(content="Error: Missing target URLs.\n", status_code=400)
 
     browser = app.state.browser
-    captured_domains = set()
+    results = []
 
     async def process_url(url_to_scan):
+        captured_domains = set()
+        redirects = []
+        errors = []
+
         context = await browser.new_context(viewport={"width": 1366, "height": 768})
         page = await context.new_page()
         page.set_default_timeout(60000)
 
-        def handle_request(request):
-            domain = urllib.parse.urlparse(request.url).netloc
+        def handle_request(req):
+            domain = urllib.parse.urlparse(req.url).netloc
             if domain:
                 captured_domains.add(domain)
 
+        def handle_response(resp):
+            if resp.request.is_navigation_request():
+                status = resp.status
+                if status in (301, 302, 303, 307, 308):
+                    location = resp.headers.get("location", "unknown")
+                    redirects.append((resp.url, location, status))
+
         page.on("request", handle_request)
+        page.on("response", handle_response)
 
         try:
-            await page.goto(url_to_scan, wait_until="domcontentloaded")
-            await wait_for_images(page, timeout=5)
-        except Exception:
-            pass
+            response = await page.goto(url_to_scan, wait_until="networkidle")
+            if not response:
+                errors.append("No response received")
+            elif response.status >= 400:
+                errors.append(f"HTTP {response.status}")
+        except Exception as e:
+            errors.append(f"{type(e).__name__}: {e}")
         finally:
             await context.close()
 
+        results.append({
+            "url": url_to_scan,
+            "domains": sorted(captured_domains),
+            "redirects": redirects,
+            "errors": errors,
+        })
+
     await asyncio.gather(*(process_url(u) for u in urls))
 
-    output = "\n".join(sorted(captured_domains)) + "\n"
-    return PlainTextResponse(content=output, status_code=200, media_type="text/plain; charset=utf-8")
+    output_lines = []
+    for r in results:
+        url = r["url"]
+        domains = r["domains"]
+        redirects = r["redirects"]
+        errors = r["errors"]
+
+        header = f"--- {url}"
+        if redirects:
+            for orig, dest, code in redirects:
+                header += f" → {dest} ({code} redirect)"
+        header += " ---"
+        output_lines.append(header)
+
+        if errors:
+            for e in errors:
+                output_lines.append(f"ERROR: {e}")
+        else:
+            output_lines.append("\n".join(domains))
+
+        output_lines.append("")
+
+    return PlainTextResponse(
+        content="\n".join(output_lines),
+        status_code=200,
+        media_type="text/plain; charset=utf-8",
+    )
 
 
 @app.post("/", response_class=PlainTextResponse)
